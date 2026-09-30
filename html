@@ -1,0 +1,89 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>文字起こし登録ツール</title>
+<style>
+body{font-family:Meiryo,sans-serif;max-width:900px;margin:20px auto;padding:0 16px}
+label{display:block;font-weight:bold;margin-top:12px}
+input,select,textarea{width:100%;padding:6px;font-size:14px;box-sizing:border-box}
+textarea{height:260px}#sug{border:1px solid #ccc;max-height:240px;overflow:auto;display:none}
+#sug div{padding:6px;cursor:pointer}#sug div:hover{background:#e8f0fe}
+button{padding:10px 18px;font-size:15px;margin-top:12px;cursor:pointer}
+.main{background:#1a73e8;color:#fff;border:0;border-radius:4px}
+.box{border:1px solid #ddd;padding:10px;margin-top:12px;border-radius:4px;background:#fafafa}
+.s{font-size:12px;color:#555}#msg{margin-top:12px;font-weight:bold}
+</style></head><body>
+<h2>商談・架電 文字起こし登録ツール</h2>
+<div class="box"><span id="fst">保存先フォルダ：未接続</span><br>
+<button id="bFolder">保存先フォルダを選択／再接続</button></div>
+<label>担当者名</label><input id="tanto">
+<label>顧客名（一部を入力すると候補が出ます）</label>
+<input id="cust" autocomplete="off"><div id="sug"></div>
+<div id="sel" class="s">顧客：未選択</div>
+<div id="newbox" class="box" style="display:none">
+<label>正式な会社名（新規）</label><input id="nname">
+<label>種別</label><select id="ntype"><option>新規ユーザー</option><option>販売代理店</option></select>
+<button id="bNew">この名前で新規登録</button></div>
+<label>区分</label><select id="kubun"><option>商談</option><option>架電</option><option>代理店打合せ</option></select>
+<label>商談・架電日時</label><input id="dt" type="datetime-local">
+<label>文字起こし（全文を貼り付け）</label><textarea id="txt"></textarea><div id="cnt" class="s">0文字</div>
+<label>メモ（任意）</label><input id="memo">
+<button id="bSave" class="main">登録して ChatGPT へ（コピー＆開く）</button>
+<div id="msg"></div>
+<details class="box"><summary>管理者用：顧客一覧の更新</summary>
+<p class="s">Excel「顧客マスタ」A5:E のデータ部分をコピーして貼り付け → 保存</p>
+<textarea id="master" style="height:120px"></textarea><button id="bMaster">顧客一覧を保存</button></details>
+<script>
+const GPT="https://chatgpt.com/g/g-p-6a6ff185590c81918b189699d575aab6/project";
+const $=i=>document.getElementById(i);let dir=null,cs=[],picked=null;
+const norm=s=>(s||"").normalize("NFKC").replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|\s/g,"").toLowerCase();
+const pad=n=>String(n).padStart(2,"0");
+const stamp=d=>d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+"_"+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds());
+const iso=d=>d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())+"T"+pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds());
+function db(){return new Promise(ok=>{const r=indexedDB.open("moji",1);r.onupgradeneeded=()=>r.result.createObjectStore("kv");r.onsuccess=()=>ok(r.result);});}
+async function kset(k,v){const d=await db();d.transaction("kv","readwrite").objectStore("kv").put(v,k);}
+async function kget(k){const d=await db();return new Promise(ok=>{const r=d.transaction("kv").objectStore("kv").get(k);r.onsuccess=()=>ok(r.result);});}
+async function rd(n){try{return await (await (await dir.getFileHandle(n)).getFile()).text();}catch(e){return "";}}
+async function wr(d,n,t){const w=await (await d.getFileHandle(n,{create:true})).createWritable();await w.write(t);await w.close();}
+async function connect(pick,gesture){
+ try{
+  if(pick){dir=await showDirectoryPicker({mode:"readwrite"});await kset("dir",dir);}
+  else if(!dir){dir=await kget("dir");if(!dir)return false;}
+  let p=await dir.queryPermission({mode:"readwrite"});
+  if(p!=="granted"&&gesture)p=await dir.requestPermission({mode:"readwrite"});
+  if(p!=="granted"){$("fst").textContent="保存先フォルダ："+dir.name+"（ボタンを押して再接続してください）";return false;}
+  $("fst").textContent="保存先フォルダ："+dir.name+" ✔";await load();return true;
+ }catch(e){$("fst").textContent="保存先フォルダ：未接続";return false;}
+}
+async function load(){cs=[];
+ for(const f of ["_customers.tsv","_newcustomers.tsv"])(await rd(f)).split(/\r?\n/).forEach(l=>{const c=l.split("\t");if(c[0]&&c[1])cs.push({id:c[0].trim(),name:c[1].trim(),type:(c[2]||"").trim()});});
+ if(!picked)$("sel").textContent="顧客：未選択（顧客一覧 "+cs.length+"件）";}
+function pick(c){picked=c;$("cust").value=c.name;$("sug").style.display="none";$("newbox").style.display="none";
+ $("sel").textContent="顧客："+c.name+"（"+c.id+"／"+c.type+"）";}
+$("cust").oninput=()=>{picked=null;const q=norm($("cust").value);const s=$("sug");s.innerHTML="";
+ if(!q){s.style.display="none";return;}
+ cs.filter(c=>norm(c.name).includes(q)||c.id.toLowerCase()===q).slice(0,30).forEach(c=>{const d=document.createElement("div");d.textContent=c.name+"　["+c.id+"／"+c.type+"]";d.onclick=()=>pick(c);s.appendChild(d);});
+ const n=document.createElement("div");n.innerHTML="<b>＋ 候補にない → 新規ユーザー／販売代理店として登録</b>";
+ n.onclick=()=>{$("newbox").style.display="block";$("nname").value=$("cust").value;s.style.display="none";};s.appendChild(n);s.style.display="block";};
+$("bNew").onclick=async()=>{if(!(await connect(false,true)))return alert("先に保存先フォルダを接続してください");
+ const nm=$("nname").value.trim();if(!nm)return alert("会社名を入力してください");
+ const sim=cs.filter(c=>norm(c.name).includes(norm(nm))||norm(nm).includes(norm(c.name)));
+ if(sim.length&&!confirm("似た顧客があります：\n"+sim.slice(0,5).map(c=>c.name+" ["+c.id+"]").join("\n")+"\n\nそれでも新規登録しますか？（既存なら[キャンセル]して候補から選択）"))return;
+ const ty=$("ntype").value,id=(ty==="販売代理店"?"D":"N")+stamp(new Date()).replace("_","").slice(2);
+ const cur=await rd("_newcustomers.tsv");await wr(dir,"_newcustomers.tsv",cur+(cur&&!cur.endsWith("\n")?"\n":"")+[id,nm,ty].join("\t")+"\n");
+ await load();pick({id,name:nm,type:ty});};
+$("txt").oninput=()=>$("cnt").textContent=$("txt").value.length.toLocaleString()+"文字"+($("txt").value.length>32000?"（⚠Excelの1セル上限を超えています）":"");
+$("bSave").onclick=async()=>{
+ if(!(await connect(false,true)))return alert("先に保存先フォルダを接続してください");
+ const t=$("tanto").value.trim(),x=$("txt").value.trim();
+ if(!t)return alert("担当者名を入力してください");if(!picked)return alert("顧客を候補から選択してください");if(!x)return alert("文字起こしを貼り付けてください");
+ localStorage.setItem("tanto",t);const now=new Date();
+ const rec={"受信日時":iso(now),"商談日時":$("dt").value,"顧客ID":picked.id,"顧客名":picked.name,"区分":$("kubun").value,"担当者":t,"文字起こし":x,"メモ":$("memo").value,"顧客種別":picked.type};
+ const rdir=await dir.getDirectoryHandle("records",{create:true});
+ await wr(rdir,stamp(now)+"_"+picked.id+".json",JSON.stringify(rec));
+ const prompt="【顧客】"+picked.name+"（"+picked.id+"／"+picked.type+"）\n【区分】"+rec["区分"]+"\n【日時】"+rec["商談日時"].replace("T"," ")+"\n【担当】"+t+(rec["メモ"]?"\n【メモ】"+rec["メモ"]:"")+"\n\n以下の文字起こしについて、プロジェクトの指示に沿ってフィードバックをお願いします。過去に同じ顧客の文字起こしがあれば、その経緯も踏まえてください。\n----\n"+x;
+ await navigator.clipboard.writeText(prompt);window.open(GPT,"_blank");
+ $("msg").textContent="✔ 登録しました（"+picked.name+"）。ChatGPTで Ctrl+V → 送信してください。";$("txt").value="";$("memo").value="";$("cnt").textContent="0文字";};
+$("bMaster").onclick=async()=>{if(!(await connect(false,true)))return alert("先に保存先フォルダを接続してください");
+ await wr(dir,"_customers.tsv",$("master").value);await load();alert("顧客一覧を保存しました（"+cs.length+"件）");};
+$("bFolder").onclick=()=>connect(true,true);
+$("tanto").value=localStorage.getItem("tanto")||"";
+const n=new Date();$("dt").value=iso(n).slice(0,16);connect(false,false);
+</script></body></html>
